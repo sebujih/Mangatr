@@ -1,0 +1,16 @@
+name: Generate Key
+on:
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate and print keystore
+        run: |
+          keytool -genkey -v -keystore my-key.jks \
+            -alias myalias -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=MangaTR,O=MangaTR,C=TR" \
+            -storepass mangatr123 -keypass mangatr123
+          echo "SIGNING_KEY_BASE64:"
+          base64 -w 0 my-key.jks
