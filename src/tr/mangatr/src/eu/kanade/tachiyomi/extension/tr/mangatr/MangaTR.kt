@@ -1,4 +1,5 @@
 package eu.kanade.tachiyomi.extension.tr.mangatr
+
 import android.util.Base64
 import eu.kanade.tachiyomi.multisrc.fmreader.FMReader
 import eu.kanade.tachiyomi.network.GET
@@ -30,6 +31,7 @@ import java.nio.charset.StandardCharsets
 import java.util.Locale
 
 class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
+
     override fun headersBuilder() = super.headersBuilder()
         .add("Accept-Language", "en-US,en;q=0.5")
 
@@ -42,7 +44,7 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
 
     override val requestPath = "manga-list-sayfala.html"
 
-    // Popular
+    // ─── Popular ─────────────────────────────────────────────────────────────
 
     override fun popularMangaNextPageSelector() = "div.pagination-wrap a.pagination-link"
 
@@ -65,7 +67,28 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
         return GET(url, headers)
     }
 
-    // Latest
+    override fun popularMangaParse(response: Response): MangasPage {
+        val document = response.asJsoup()
+        cacheGenresFromListPage(document)
+
+        val mangas = document.select(popularMangaSelector())
+            .filterNot { card ->
+                val badge = card.selectFirst(".media-card__badge")?.text()?.lowercase(Locale.ROOT).orEmpty()
+                badge.contains("novel") || badge.contains("anime")
+            }
+            .map { popularMangaFromElement(it) }
+
+        val currentPage = response.request.url.queryParameter("page")?.toIntOrNull() ?: 1
+        val nextPageFromArrow = document.select(popularMangaNextPageSelector())
+            .firstOrNull { it.text().trim() == "›" }
+            ?.attr("href")
+            ?.let { href -> Regex("""[?&]page=(\d+)""").find(href)?.groupValues?.get(1)?.toIntOrNull() }
+        val hasNextPage = nextPageFromArrow != null && nextPageFromArrow > currentPage
+
+        return MangasPage(mangas, hasNextPage)
+    }
+
+    // ─── Latest ──────────────────────────────────────────────────────────────
 
     override fun latestUpdatesRequest(page: Int): Request {
         val url = "$baseUrl/$requestPath".toHttpUrl().newBuilder()
@@ -77,10 +100,9 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
         return GET(url, headers)
     }
 
-    // Search
+    // ─── Search & Filters ────────────────────────────────────────────────────
 
     private var captchaUrl: String? = null
-
     private var cachedGenres: List<FMReader.Genre> = emptyList()
 
     override fun getFilterList(): FilterList {
@@ -122,36 +144,27 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
             .addQueryParameter("page", page.toString())
             .addQueryParameter("listType", "pagination")
 
-        // PHP keeps the last `tur` in the query string; `tur` is shared with genre + special-type filters.
         val genreFilter = filters.firstInstanceOrNull<FMReader.GenreList>()
         val includedGenres = genreFilter?.state?.filter { it.isIncluded() }.orEmpty()
         val specialTur = filters.firstInstanceOrNull<SpecialTypeFilter>()?.let { f ->
             arrayOf("", "2")[f.state].takeIf { it.isNotEmpty() }
         }
         when {
-            includedGenres.isNotEmpty() -> {
-                includedGenres.forEach { url.addQueryParameter("tur", it.id) }
-            }
-            specialTur != null -> {
-                url.addQueryParameter("tur", specialTur)
-            }
+            includedGenres.isNotEmpty() -> includedGenres.forEach { url.addQueryParameter("tur", it.id) }
+            specialTur != null -> url.addQueryParameter("tur", specialTur)
         }
 
         filters.firstInstanceOrNull<PublicationStatusFilter>()?.let { f ->
-            val value = arrayOf("", "1", "2")[f.state]
-            if (value.isNotEmpty()) url.addQueryParameter("durum", value)
+            val v = arrayOf("", "1", "2")[f.state]; if (v.isNotEmpty()) url.addQueryParameter("durum", v)
         }
         filters.firstInstanceOrNull<TranslateStatusFilter>()?.let { f ->
-            val value = arrayOf("", "1", "2", "3", "4")[f.state]
-            if (value.isNotEmpty()) url.addQueryParameter("ceviri", value)
+            val v = arrayOf("", "1", "2", "3", "4")[f.state]; if (v.isNotEmpty()) url.addQueryParameter("ceviri", v)
         }
         filters.firstInstanceOrNull<AgeRestrictionFilter>()?.let { f ->
-            val value = arrayOf("", "16", "18")[f.state]
-            if (value.isNotEmpty()) url.addQueryParameter("yas", value)
+            val v = arrayOf("", "16", "18")[f.state]; if (v.isNotEmpty()) url.addQueryParameter("yas", v)
         }
         filters.firstInstanceOrNull<ContentTypeFilter>()?.let { f ->
-            val value = arrayOf("", "1", "3", "5")[f.state]
-            if (value.isNotEmpty()) url.addQueryParameter("icerik", value)
+            val v = arrayOf("", "1", "3", "5")[f.state]; if (v.isNotEmpty()) url.addQueryParameter("icerik", v)
         }
 
         return GET(url.build(), headers)
@@ -162,9 +175,7 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
         return if (path.contains("/arama.html")) {
             val mangas = response.asJsoup()
                 .select("div.row a[data-toggle]")
-                .filterNot {
-                    it.parent()?.selectFirst("a.anime-r, a.novel-r") != null
-                }
+                .filterNot { it.parent()?.selectFirst("a.anime-r, a.novel-r") != null }
                 .map(::searchMangaFromElement)
             MangasPage(mangas, false)
         } else {
@@ -177,37 +188,35 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
         title = element.text()
     }
 
-    /** Detail page appends (YYYY) to the title; strip it to match list browse titles. */
+    // ─── Manga Details ───────────────────────────────────────────────────────
+
     private val trailingYearInTitle = Regex("""\s*\((?:19|20)\d{2}\)\s*$""")
 
-    override fun getMangaUrl(manga: SManga): String = captchaUrl?.also { captchaUrl = null } ?: super.getMangaUrl(manga)
+    override fun getMangaUrl(manga: SManga): String =
+        captchaUrl?.also { captchaUrl = null } ?: super.getMangaUrl(manga)
 
     override fun mangaDetailsParse(document: Document) = SManga.create().apply {
         title = document.selectFirst("h1")!!.text()
-            .replace(trailingYearInTitle, "")
-            .trim()
+            .replace(trailingYearInTitle, "").trim()
 
         thumbnail_url = document.selectFirst("img[src*='image.mangatr.site'], img.poster-card__image")?.absUrl("src")
             ?: document.selectFirst("img[title]")?.absUrl("src")
 
         val descBlock = document.selectFirst("div.detail-copy")?.text()?.trim().orEmpty()
-        val altNames = document.selectFirst("div.detail-hero__sub")?.text()?.trim().orEmpty()
+        val altNames  = document.selectFirst("div.detail-hero__sub")?.text()?.trim().orEmpty()
         description = buildString {
             if (descBlock.isNotEmpty()) append(descBlock)
             if (altNames.isNotEmpty()) {
                 if (isNotEmpty()) append("\n\n")
-                append("Alternative Names: ")
-                append(altNames)
+                append("Alternative Names: ").append(altNames)
             }
         }.ifBlank { null }
 
         author = document.detailMetaLinks("Yazar", "author")
-            .joinToString { it.text().trim() }
-            .takeUnless { it.isBlank() }
+            .joinToString { it.text().trim() }.takeUnless { it.isBlank() }
 
         artist = document.detailMetaLinks("Sanatçı", "artist")
-            .joinToString { it.text().trim() }
-            .takeUnless { it.isBlank() }
+            .joinToString { it.text().trim() }.takeUnless { it.isBlank() }
 
         genre = document.detailMetaLinks("Tür", "tur=").joinToString { it.text() }
 
@@ -216,33 +225,33 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
     }
 
     private fun Document.detailMetaLinks(labelSubstring: String, hrefSubstring: String): List<Element> {
-        val row = selectFirst("span.detail-meta-row__label:contains($labelSubstring)")?.closest(".detail-meta-row")
-            ?: return emptyList()
+        val row = selectFirst("span.detail-meta-row__label:contains($labelSubstring)")
+            ?.closest(".detail-meta-row") ?: return emptyList()
         return row.select(".detail-meta-row__value a[href*='$hrefSubstring']")
     }
 
     private fun Document.detailMetaLink(labelSubstring: String, hrefSubstring: String): String? {
-        val row = selectFirst("span.detail-meta-row__label:contains($labelSubstring)")?.closest(".detail-meta-row")
-            ?: return null
-        return row.selectFirst(".detail-meta-row__value a[href*='$hrefSubstring']")?.text()?.trim()
-            ?.takeIf { it.isNotEmpty() }
+        val row = selectFirst("span.detail-meta-row__label:contains($labelSubstring)")
+            ?.closest(".detail-meta-row") ?: return null
+        return row.selectFirst(".detail-meta-row__value a[href*='$hrefSubstring']")
+            ?.text()?.trim()?.takeIf { it.isNotEmpty() }
     }
 
     private fun parseTranslateStatusBadge(label: String): Int {
         if (label.isEmpty()) return SManga.UNKNOWN
         val t = label.lowercase(Locale.ROOT)
         return when {
-            t.contains("tamamlan") -> SManga.COMPLETED
-            t.contains("bırak") || t.contains("birak") -> SManga.CANCELLED
-            t.contains("askı") || t.contains("askida") -> SManga.ON_HIATUS
-            t.contains("devam") -> SManga.ONGOING
-            t.contains("olmayan") -> SManga.UNKNOWN
-            else -> SManga.UNKNOWN
+            t.contains("tamamlan")                          -> SManga.COMPLETED
+            t.contains("bırak") || t.contains("birak")     -> SManga.CANCELLED
+            t.contains("askı")  || t.contains("askida")    -> SManga.ON_HIATUS
+            t.contains("devam")                             -> SManga.ONGOING
+            else                                            -> SManga.UNKNOWN
         }
     }
 
-    // Chapters — API HTML: `cek/fetch_pages_manga.php` returns `article.chapter-card` (not `div.chapter-item`).
+    // ─── Chapter List ────────────────────────────────────────────────────────
 
+    // API yanıtı: article.chapter-card elemanları
     override fun chapterListSelector() = "article.chapter-card"
 
     private val chapterListHeaders by lazy {
@@ -250,8 +259,13 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
     }
 
     override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {
-        val id = manga.url.substringAfter("manga-").substringBefore(".")
-        val requestUrl = "$baseUrl/cek/fetch_pages_manga.php?manga_cek=$id"
+        // URL: manga-soredemo-ayumu-wa-yosetekuru.html
+        // manga_cek için "manga-" sonrasını al → soredemo-ayumu-wa-yosetekuru
+        val slug = manga.url
+            .substringAfterLast("/")   // dosya adını al
+            .removePrefix("manga-")    // "manga-" önekini kaldır
+            .removeSuffix(".html")     // ".html" sonekini kaldır
+        val requestUrl = "$baseUrl/cek/fetch_pages_manga.php?manga_cek=$slug"
         return client.newCall(GET(requestUrl, chapterListHeaders))
             .asObservableSuccess()
             .map(::chapterListParse)
@@ -278,17 +292,23 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
         return chapters
     }
 
+    // ✅ DÜZELTME: chapter-card__title yok, link chapter-card__row'da
     override fun chapterFromElement(element: Element): SChapter = SChapter.create().apply {
-        val link = element.selectFirst("a.chapter-card__title")!!
+        val link = element.selectFirst("a.chapter-card__row")!!
         setUrlWithoutDomain(link.attr("href"))
-        val chapterNum = link.selectFirst("span:last-child")?.text()?.trim()
-            ?: link.text().trim()
+
+        val chapterNum   = element.selectFirst("div.chapter-number")?.text()?.trim() ?: ""
+        val chapterTitle = element.selectFirst("div.chapter-title")?.ownText()?.trim()
+            ?: element.selectFirst("div.chapter-title")?.text()?.trim() ?: ""
         val sub = element.selectFirst("p.chapter-card__subtitle")?.text()?.trim()
+
         name = when {
-            sub.isNullOrEmpty() -> chapterNum
-            sub.contains("Bölüm") -> sub
-            else -> "$chapterNum: $sub"
+            !sub.isNullOrEmpty() && chapterTitle.isNotEmpty() -> "$chapterTitle - $sub"
+            !sub.isNullOrEmpty()                              -> "$chapterNum - $sub"
+            chapterTitle.isNotEmpty()                         -> chapterTitle
+            else                                              -> chapterNum
         }
+
         date_upload = parseRelativeDate(
             element.selectFirst("div.chapter-card__meta span")?.text()?.trim() ?: "",
         )
@@ -298,7 +318,7 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
 
     override fun pageListRequest(chapter: SChapter): Request = GET(getChapterUrl(chapter), headers)
 
-    // Pages
+    // ─── Pages ───────────────────────────────────────────────────────────────
 
     override fun pageListParse(document: Document): List<Page> {
         if (document.selectFirst("canvas#sliderCanvas, div.box h2:contains(Güvenlik Doğrulaması)") != null) {
@@ -325,7 +345,6 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
 
                 if (urls.isEmpty()) continue
 
-                // chapter.js: part index -> vertical canvas order (matches site reader).
                 val mapping = decodePartOrderMapping(orderAttr)
                 if (mapping == null || mapping.isEmpty()) {
                     pages.add(Page(pages.size, imageUrl = urls.first()))
@@ -362,14 +381,8 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
             .map { it.value.replace("&amp;", "&") }
             .filterNot { it.contains("logo") }
             .filter { url ->
-                val keyMatch = Regex("""key=([^&]+)""").find(url)
-                val key = keyMatch?.groupValues?.get(1) ?: return@filter false
-                if (seenKeys.contains(key)) {
-                    false
-                } else {
-                    seenKeys.add(key)
-                    true
-                }
+                val key = Regex("""key=([^&]+)""").find(url)?.groupValues?.get(1) ?: return@filter false
+                seenKeys.add(key)
             }
             .toList()
 
@@ -380,7 +393,6 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
         return emptyList()
     }
 
-    /** Decodes `data-order`: Base64, XOR 0x5A, then JSON mapping part index to vertical order. */
     private fun decodePartOrderMapping(encoded: String): List<Pair<Int, Int>>? {
         return try {
             val raw = Base64.decode(encoded, Base64.DEFAULT)
@@ -388,18 +400,14 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
             val jsonStr = String(decoded.map { it.toByte() }.toByteArray(), StandardCharsets.UTF_8)
             val element = Json.Default.parseToJsonElement(jsonStr)
             when (element) {
-                is JsonArray -> {
-                    element.mapIndexedNotNull { idx, el ->
-                        val pos = el.jsonPrimitive.content.toIntOrNull() ?: return@mapIndexedNotNull null
-                        idx to pos
-                    }
+                is JsonArray -> element.mapIndexedNotNull { idx, el ->
+                    val pos = el.jsonPrimitive.content.toIntOrNull() ?: return@mapIndexedNotNull null
+                    idx to pos
                 }
-                is JsonObject -> {
-                    element.mapNotNull { (k, v) ->
-                        val partIdx = k.toIntOrNull() ?: return@mapNotNull null
-                        val pos = v.jsonPrimitive.content.toIntOrNull() ?: return@mapNotNull null
-                        partIdx to pos
-                    }
+                is JsonObject -> element.mapNotNull { (k, v) ->
+                    val partIdx = k.toIntOrNull() ?: return@mapNotNull null
+                    val pos = v.jsonPrimitive.content.toIntOrNull() ?: return@mapNotNull null
+                    partIdx to pos
                 }
                 else -> null
             }
@@ -408,79 +416,44 @@ class MangaTR : FMReader("Manga-TR", "https://manga-tr.com", "tr") {
         }
     }
 
-    /** Genres from `select[name=tur]` on the list page (cached after first parse). */
+    // ─── Genre Cache ─────────────────────────────────────────────────────────
+
     private fun cacheGenresFromListPage(document: Document) {
         if (cachedGenres.isNotEmpty()) return
         val parsed = document.select("select[name=tur] option[value]").mapNotNull { opt ->
             val value = opt.attr("value").ifBlank { return@mapNotNull null }
             FMReader.Genre(opt.text().trim(), value)
         }
-        if (parsed.isNotEmpty()) {
-            cachedGenres = parsed
-        }
+        if (parsed.isNotEmpty()) cachedGenres = parsed
     }
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
-        cacheGenresFromListPage(document)
+    // ─── Filters ─────────────────────────────────────────────────────────────
 
-        val mangas = document.select(popularMangaSelector())
-            .filterNot { card ->
-                val badge = card.selectFirst(".media-card__badge")?.text()?.lowercase(Locale.ROOT).orEmpty()
-                badge.contains("novel") || badge.contains("anime")
-            }
-            .map { popularMangaFromElement(it) }
+    private class SortFilter : Filter.Select<String>(
+        "Sıralama", arrayOf("Son güncelleme", "Popülerlik", "Ada göre"),
+    )
 
-        // Last page: "›" still points at the same page number (compare to current).
-        val currentPage = response.request.url.queryParameter("page")?.toIntOrNull() ?: 1
-        val nextPageFromArrow = document.select(popularMangaNextPageSelector())
-            .firstOrNull { it.text().trim() == "›" }
-            ?.attr("href")
-            ?.let { href -> Regex("""[?&]page=(\d+)""").find(href)?.groupValues?.get(1)?.toIntOrNull() }
-        val hasNextPage = nextPageFromArrow != null && nextPageFromArrow > currentPage
+    private class SortDirectionFilter : Filter.Select<String>(
+        "Sıralama yönü", arrayOf("Azalan (Z→A)", "Artan (A→Z)"),
+    )
 
-        return MangasPage(mangas, hasNextPage)
-    }
+    private class PublicationStatusFilter : Filter.Select<String>(
+        "Yayın Durumu", arrayOf("Tümü", "Tamamlandı", "Devam Ediyor"),
+    )
 
-    private class SortFilter :
-        Filter.Select<String>(
-            "Sıralama",
-            arrayOf("Ada göre", "Popülerlik", "Son güncelleme"),
-        )
+    private class TranslateStatusFilter : Filter.Select<String>(
+        "Çeviri Durumu", arrayOf("Tümü", "Tamamlanan", "Devam Eden", "Bırakılan", "Olmayan"),
+    )
 
-    private class SortDirectionFilter :
-        Filter.Select<String>(
-            "Sıralama yönü",
-            arrayOf("Alfabetik sıra", "Tersten başa"),
-        )
+    private class AgeRestrictionFilter : Filter.Select<String>(
+        "Yaş Sınırlaması", arrayOf("Tümü", "+16", "+18"),
+    )
 
-    private class PublicationStatusFilter :
-        Filter.Select<String>(
-            "Yayın Durumu",
-            arrayOf("Tümü", "Tamamlandı", "Devam Ediyor"),
-        )
+    private class ContentTypeFilter : Filter.Select<String>(
+        "İçerik Türü", arrayOf("Tümü", "Manga", "Webtoon", "Çizgi Roman"),
+    )
 
-    private class TranslateStatusFilter :
-        Filter.Select<String>(
-            "Çeviri Durumu",
-            arrayOf("Tümü", "Tamamlanan", "Devam Eden", "Bırakılan", "Olmayan"),
-        )
-
-    private class AgeRestrictionFilter :
-        Filter.Select<String>(
-            "Yaş Sınırlaması",
-            arrayOf("Tümü", "+16", "+18"),
-        )
-
-    private class ContentTypeFilter :
-        Filter.Select<String>(
-            "İçerik Türü",
-            arrayOf("Tümü", "Manga", "Webtoon", "Çizgi Roman"),
-        )
-
-    private class SpecialTypeFilter :
-        Filter.Select<String>(
-            "Özel Tür",
-            arrayOf("Tümü", "Yetişkin"),
-        )
+    private class SpecialTypeFilter : Filter.Select<String>(
+        "Özel Tür", arrayOf("Tümü", "Yetişkin"),
+    )
 }
