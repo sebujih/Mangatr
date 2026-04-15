@@ -32,15 +32,15 @@ jobs:
       delete: ${{ steps.generate-matrices.outputs.delete }}
     steps:
       - name: Checkout main branch
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Get last successful CI commit
-        uses: nrwl/nx-set-shas@afb73a62d26e41464e9254689e1fd6122ee683c1 # v5.0.1
+        uses: nrwl/nx-set-shas@v4
         with:
-          fallback-sha: 4b825dc642cb6eb9a060e54bf8d69288fbee4904 # empty tree
+          fallback-sha: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
 
       - id: generate-matrices
         name: Create output matrices
@@ -57,20 +57,18 @@ jobs:
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - name: Checkout main branch
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
 
       - name: Set up Java
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        uses: actions/setup-java@v4
         with:
           java-version: 17
           distribution: temurin
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
-        with:
-          cache-read-only: ${{ matrix.chunk.number > 1 }}
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Prepare signing key
         run: |
@@ -86,8 +84,7 @@ jobs:
           ./gradlew $MODULES
 
       - name: Upload APKs (${{ matrix.chunk.number }})
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: "github.repository == 'keiyoushi/extensions-source'"
+        uses: actions/upload-artifact@v4
         with:
           name: "individual-apks-${{ matrix.chunk.number }}"
           path: "**/*.apk"
@@ -99,23 +96,22 @@ jobs:
   publish:
     name: Publish extension repo
     needs: [prepare, build]
-    if: "github.repository == 'keiyoushi/extensions-source'"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Download APK artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@v4
         with:
           path: ~/apk-artifacts
 
       - name: Set up JDK
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        uses: actions/setup-java@v4
         with:
           java-version: 17
           distribution: temurin
 
       - name: Checkout main branch
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@v4
         with:
           ref: main
           path: main
@@ -131,12 +127,11 @@ jobs:
           python ./.github/scripts/create-repo.py
 
       - name: Checkout repo branch
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@v4
         with:
-          repository: keiyoushi/extensions
-          token: ${{ secrets.BOT_PAT }}
           ref: repo
           path: repo
+          token: ${{ secrets.BOT_PAT }}
           persist-credentials: true
 
       - name: Merge and deploy repo
